@@ -1,0 +1,136 @@
+clearvars;
+clc;
+
+%% User settings
+
+fit_range_db = [-5 -55];
+zoom_depth_start = -5;
+zoom_depth_step = 0.5;
+zoom_depth_end = 5;
+zoom_depths = zoom_depth_start:zoom_depth_step:zoom_depth_end;
+N = 4;
+sofa_file_name = 'roomToHallway_srcRoom_noLOS.sofa';
+
+%% Paths and SOFA loading
+
+script_dir = fileparts(fileparts(mfilename('fullpath')));
+run(fullfile(script_dir, 'addpaths.m'));
+
+sofa_file = fullfile(script_dir, 'SOFAfiles', sofa_file_name);
+
+fprintf('Loading %s\n', sofa_file);
+sofa = SOFAload(sofa_file);
+
+fs = double(sofa.Data.SamplingRate(1));
+n_measurements = size(sofa.Data.IR, 1);
+measurement_indices = (1:n_measurements).';
+n_zoom_depths = numel(zoom_depths);
+
+%% Precompute original and zoomed omni T60 at all positions
+
+t60_original = zeros(n_measurements, 1);
+t60_zoom = zeros(n_measurements, n_zoom_depths);
+
+for measurement_index = 1:n_measurements
+    srir = double(squeeze(sofa.Data.IR(measurement_index, :, :))).';
+
+    t60_original(measurement_index) = compute_omni_t60(srir(:, 1), fs, fit_range_db);
+
+    for zoom_idx = 1:n_zoom_depths
+        coord_change = [zoom_depths(zoom_idx) 0 0];
+        srir_zoom = zooming(srir, N, coord_change, false);
+        t60_zoom(measurement_index, zoom_idx) = compute_omni_t60(srir_zoom(:, 1), fs, fit_range_db);
+    end
+
+    fprintf('Position %d/%d done.\n', measurement_index, n_measurements);
+end
+
+clear sofa srir srir_zoom
+
+%% Zoom-depth limits per position
+
+zoom_t60_lower = min(t60_zoom, [], 2);
+zoom_t60_upper = max(t60_zoom, [], 2);
+
+%% Plot the zoom range behind the original T60 curve
+
+figure('Name', 'Omni T60 with zoom-depth limits', 'NumberTitle', 'off', 'Color', 'w');
+axes_handle = axes;
+hold(axes_handle, 'on');
+
+zoom_colour = [0.8500 0.3250 0.0980];
+t60_colour = [0 0.3000 0.7000];
+fill_positions = [measurement_indices; flipud(measurement_indices)];
+fill_limits = [zoom_t60_lower; flipud(zoom_t60_upper)];
+
+zoom_range_patch = fill( ...
+    axes_handle, ...
+    fill_positions, ...
+    fill_limits, ...
+    zoom_colour, ...
+    'FaceAlpha', ...
+    0.20, ...
+    'EdgeColor', ...
+    'none');
+
+zoom_lower_line = plot( ...
+    axes_handle, ...
+    measurement_indices, ...
+    zoom_t60_lower, ...
+    '--', ...
+    'Color', ...
+    zoom_colour, ...
+    'LineWidth', ...
+    1.1);
+
+zoom_upper_line = plot( ...
+    axes_handle, ...
+    measurement_indices, ...
+    zoom_t60_upper, ...
+    '--', ...
+    'Color', ...
+    zoom_colour, ...
+    'LineWidth', ...
+    1.1);
+
+t60_line = plot( ...
+    axes_handle, ...
+    measurement_indices, ...
+    t60_original, ...
+    'o-', ...
+    'Color', ...
+    t60_colour, ...
+    'MarkerFaceColor', ...
+    'w', ...
+    'MarkerSize', ...
+    3.5, ...
+    'LineWidth', ...
+    1.6);
+
+uistack(zoom_range_patch, 'bottom');
+uistack(t60_line, 'top');
+
+xlabel(axes_handle, 'Measurement position');
+ylabel(axes_handle, 'T60 (s)');
+title(axes_handle, sprintf('Omni-channel T60 and zoom-depth range (%g to %g dB fit)', fit_range_db(1), fit_range_db(2)));
+xlim(axes_handle, [1 n_measurements]);
+grid(axes_handle, 'on');
+box(axes_handle, 'on');
+set(axes_handle, 'Layer', 'top', 'FontSize', 11);
+
+legend( ...
+    axes_handle, ...
+    [t60_line, zoom_lower_line, zoom_upper_line, zoom_range_patch], ...
+    {'Original omni T60', 'Zoom T60 lower limit', 'Zoom T60 upper limit', 'Zoom T60 range'}, ...
+    'Location', ...
+    'best');
+
+hold(axes_handle, 'off');
+
+
+function t60_s = compute_omni_t60(omni_ir, fs, fit_range_db)
+    [~, edc_db, time_vector] = compute_omni_energy_decay_from_ir(omni_ir, fs);
+    fit_indices = edc_db <= fit_range_db(1) & edc_db >= fit_range_db(2);
+    fit_coefficients = polyfit(time_vector(fit_indices), edc_db(fit_indices), 1);
+    t60_s = -60 / fit_coefficients(1);
+end
